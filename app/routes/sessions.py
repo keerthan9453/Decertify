@@ -603,64 +603,74 @@ async def get_full_results(session_id: str, user_id: str = Depends(get_current_u
         "peers": full_results
     }
 
-@router.post("/explain")
-async def explain_hyperparameters(request: Request):
-    """
-    Takes a single hyperparameter JSON object and returns
-    a human-readable explanation from Gemini.
-    """
+def make_json_safe(obj):
+    if isinstance(obj, dict):
+        return {k: make_json_safe(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [make_json_safe(v) for v in obj]
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, ObjectId):
+        return str(obj)
+    else:
+        return obj
 
+
+@router.post("/{session_id}/explain-results")
+async def explain_session_results(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
     try:
-        hp = await request.json()
+        session_oid = ObjectId(session_id)
+        user_oid = ObjectId(user_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    session = sessions_collection.find_one({"_id": session_oid})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    owner_id = session.get("owner_user_id")
+    peer_ids = [peer.get("uid") for peer in session.get("peers", [])]
+
+    if str(user_oid) != owner_id and str(user_oid) not in peer_ids:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    full_results = {
+        "session_id": str(session["_id"]),
+        "num_peers": session.get("num_peers"),
+        "status": session.get("status"),
+        "peers": [
+            {
+                "peer_id": peer.get("uid"),
+                "hyperparameters": peer.get("hyperparameters", {}),
+                "results": peer.get("results", [])
+            }
+            for peer in session.get("peers", [])
+        ],
+    }
+
+    # 🔑 THIS IS THE FIX
+    safe_results = make_json_safe(full_results)
 
     prompt = f"""
-You are an ML teaching assistant.
+You are a senior machine learning teaching assistant.
 
-Explain the following training hyperparameters in simple,
-clear language for a student.
+Below are COMPLETE training results from a distributed ML session.
+Each peer trained the SAME model using DIFFERENT hyperparameters.
 
-Hyperparameters:
-{hp}
+Session Results:
+{json.dumps(safe_results, indent=2)}
 
-Explain:
-- What this configuration is trying to do
-- The trade-offs involved
-- When someone should use it
-
-Keep it short and beginner-friendly.
+Explain clearly:
+- Which peer performed best and why
+- Whether the models are underfitting or overfitting
+- Convergence behavior
+- Which hyperparameters mattered most
+- Whether further tuning is worth it
 """
 
-    try:
-        response = model.generate_content(prompt)
+    response = model.generate_content(prompt)
 
-        return {
-            "explanation": response.text.strip()
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Gemini API error: {str(e)}"
-        )
-    
-@router.get("/peers/online")
-async def get_online_peers(user_id: str = Depends(get_current_user_id)):
-    """
-    Returns how many peers are currently ONLINE.
-    """
-
-    online_count = users_collection.count_documents(
-        {"status": "ONLINE"}
-    )
-
-    track_event(
-        event_type="View_Online_Peers",
-        user_id=user_id,
-        props={"online_peers": online_count}
-    )
-
-    return {
-        "online_peers": online_count
-    }
+    return {"analysis": response.text.strip()}
