@@ -1,0 +1,23 @@
+fastapi
+uvicorn
+pymongo
+python-dotenv
+psutil
+certifi
+
+# Auth
+passlib[bcrypt]
+bcrypt<4.0.0
+python-jose[cryptography]
+
+# Pydantic email validation
+email-validator
+aio_pika
+minio
+boto3
+python-multipart
+torch
+pandas
+requests
+amplitude-analytics
+google-generativeai==0.8.6
